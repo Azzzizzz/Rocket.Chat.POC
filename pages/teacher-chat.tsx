@@ -32,7 +32,9 @@ export default function TeacherChat() {
 
       try {
         await ddp.connect(RC_URL);
-        await ddp.loginWithToken(data.authToken);
+        if (data) {
+          await ddp.loginWithToken(data.authToken);
+        }
       } catch (err) {
         console.warn("Realtime login failed", err);
       }

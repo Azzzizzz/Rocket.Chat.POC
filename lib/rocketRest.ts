@@ -90,7 +90,14 @@ export const getPresence = async (
       params: { username },
       headers: { "X-Auth-Token": authToken, "X-User-Id": userId },
     });
-    return res.data.presence;
+    const p = res.data?.presence as string | undefined;
+    if (p) return p;
+    // Fallback to users.info
+    const info = await api.get("/users.info", {
+      params: { username },
+      headers: { "X-Auth-Token": authToken, "X-User-Id": userId },
+    });
+    return (info.data?.user?.status as string | undefined) || "offline";
   } catch {
     return "offline";
   }
@@ -173,5 +180,24 @@ export const inviteUserToRoom = async (
     { roomId: rid, userId: targetUserId },
     { headers: { "X-Auth-Token": authToken, "X-User-Id": userId } }
   );
+  return res.data;
+};
+
+export const uploadFile = async (
+  rid: string,
+  file: File,
+  authToken: string,
+  userId: string,
+  description?: string
+) => {
+  const form = new FormData();
+  form.append("file", file);
+  if (description) form.append("description", description);
+  const res = await api.post(`/rooms.upload/${rid}`, form, {
+    headers: {
+      "X-Auth-Token": authToken,
+      "X-User-Id": userId,
+    },
+  });
   return res.data;
 };

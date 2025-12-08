@@ -13,9 +13,9 @@ export const connect = async () => {
 
 export const loginWithToken = async (authToken: string, _userId: string) => {
   // driver.login with resume token
-  return await driver.login({ resume: authToken } as unknown as {
-    resume: string;
-  });
+  const d: unknown = driver;
+  const api = d as { login: (x: unknown) => Promise<unknown> };
+  return await api.login({ resume: authToken } as unknown);
 };
 
 export const subscribeToRoomMessages = async (
