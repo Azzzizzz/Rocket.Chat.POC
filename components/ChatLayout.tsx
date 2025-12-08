@@ -163,6 +163,53 @@ export default function ChatLayout({
   }, [authToken, userId]);
 
   useEffect(() => {
+    // Realtime unread updates via DDP user notifications
+    let subA: string | null = null;
+    let subB: string | null = null;
+    (async () => {
+      try {
+        subA = ddp.subscribeUserEvent(
+          `${userId}/subscriptions-changed`,
+          (args) => {
+            const [event, sub] = (args || []) as [
+              string,
+              Record<string, unknown>
+            ];
+            const rid = (sub?.rid as string) || (sub?._id as string) || "";
+            const unreadVal = sub?.unread as number | undefined;
+            const alert = !!sub?.alert;
+            if (rid) {
+              const count =
+                typeof unreadVal === "number" ? unreadVal : alert ? 1 : 0;
+              setUnreadCounts((prev) => ({ ...prev, [rid]: count }));
+              setUnreadMap((prev) => ({ ...prev, [rid]: count > 0 }));
+            }
+          }
+        );
+        subB = ddp.subscribeUserEvent(`${userId}/rooms-changed`, (args) => {
+          const [event, room] = (args || []) as [
+            string,
+            Record<string, unknown>
+          ];
+          const rid = (room?._id as string) || (room?.rid as string) || "";
+          const unreadVal = room?.unread as number | undefined;
+          const alert = !!room?.alert;
+          if (rid) {
+            const count =
+              typeof unreadVal === "number" ? unreadVal : alert ? 1 : 0;
+            setUnreadCounts((prev) => ({ ...prev, [rid]: count }));
+            setUnreadMap((prev) => ({ ...prev, [rid]: count > 0 }));
+          }
+        });
+      } catch {}
+    })();
+    return () => {
+      if (subA) ddp.unsubscribe(subA, `${userId}/subscriptions-changed`);
+      if (subB) ddp.unsubscribe(subB, `${userId}/rooms-changed`);
+    };
+  }, [userId]);
+
+  useEffect(() => {
     if (!selectedRoom) {
       if (pollRef.current) {
         clearInterval(pollRef.current);

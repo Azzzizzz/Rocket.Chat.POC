@@ -17,6 +17,7 @@ type ChangeMsg = {
 };
 
 const roomListeners = new Map<string, (msg: Record<string, unknown>) => void>();
+const userListeners = new Map<string, (args: unknown[]) => void>();
 
 function urlToWS(httpUrl: string) {
   const useSsl = httpUrl.startsWith("https://");
@@ -64,6 +65,15 @@ export async function connect(httpUrl: string) {
           >;
           const fn = roomListeners.get(rid);
           if (fn && payload) fn(payload);
+        } else if (
+          data.msg === "changed" &&
+          data.collection === "stream-notify-user"
+        ) {
+          const c = data as ChangeMsg;
+          const event = c.fields?.eventName || "";
+          const args = (c.fields?.args || []) as unknown[];
+          const fn = userListeners.get(event);
+          if (fn) fn(args);
         }
       } catch {}
     };
@@ -120,16 +130,20 @@ export function subscribeRoomMessages(
   return subId;
 }
 
-export function unsubscribe(subId: string, rid?: string) {
+export function unsubscribe(subId: string, ridOrEvent?: string) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ msg: "unsub", id: subId }));
   }
-  if (rid) roomListeners.delete(rid);
+  if (ridOrEvent) {
+    roomListeners.delete(ridOrEvent);
+    userListeners.delete(ridOrEvent);
+  }
 }
 
 export function disconnect() {
   try {
     roomListeners.clear();
+    userListeners.clear();
     if (
       ws &&
       (ws.readyState === WebSocket.OPEN ||
@@ -141,4 +155,22 @@ export function disconnect() {
   ws = null;
   isReady = false;
   connectPromise = null;
+}
+
+export function subscribeUserEvent(
+  eventName: string,
+  cb: (args: unknown[]) => void
+) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("WS not open");
+  const subId = genId();
+  userListeners.set(eventName, cb);
+  ws.send(
+    JSON.stringify({
+      msg: "sub",
+      id: subId,
+      name: "stream-notify-user",
+      params: [eventName, false],
+    })
+  );
+  return subId;
 }
