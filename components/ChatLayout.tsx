@@ -66,8 +66,6 @@ export default function ChatLayout({
     username?: string;
     lastLogin?: string;
   } | null>(null);
-  const initialScrollDoneRef = useRef<Record<string, boolean>>({});
-  const readRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     // Load initial rooms
@@ -104,8 +102,6 @@ export default function ChatLayout({
       }
       return;
     }
-
-    initialScrollDoneRef.current[selectedRoom.rid] = false;
 
     rest
       .getRoomHistory(selectedRoom.rid, selectedRoom.t, authToken, userId)
@@ -214,52 +210,6 @@ export default function ChatLayout({
     return d && !isNaN(d.getTime()) ? d.toLocaleTimeString() : "";
   };
 
-  const toDate = (ts?: unknown) => {
-    if (!ts) return null;
-    if (ts instanceof Date) return ts;
-    if (typeof ts === "string" || typeof ts === "number") {
-      const d = new Date(ts as string);
-      return isNaN(d.getTime()) ? null : d;
-    }
-    if (typeof ts === "object") {
-      const o = ts as Record<string, unknown>;
-      const val = (o.$date as unknown) || (o.date as unknown);
-      if (typeof val === "string" || typeof val === "number") {
-        const d = new Date(val as string);
-        return isNaN(d.getTime()) ? null : d;
-      }
-    }
-    return null;
-  };
-
-  const isNearBottom = (el: HTMLElement, threshold = 80) => {
-    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    return distance <= threshold;
-  };
-
-  const handleMessageScroll = () => {
-    if (!selectedRoom || !messagesRef.current) return;
-    const el = messagesRef.current;
-    const bottom = el.scrollTop + el.clientHeight;
-    const len = Math.min(el.children.length, messages.length);
-    let lastVisibleIdx = -1;
-    for (let i = 0; i < len; i++) {
-      const child = el.children.item(i) as HTMLElement | null;
-      if (!child) break;
-      const childBottom = child.offsetTop + child.offsetHeight;
-      if (childBottom <= bottom - 2) lastVisibleIdx = i;
-      else break;
-    }
-    if (lastVisibleIdx >= 0) {
-      const ts = toDate(messages[lastVisibleIdx]?.ts)?.getTime();
-      if (typeof ts === "number") {
-        const rid = selectedRoom.rid;
-        const prev = readRef.current[rid];
-        if (!prev || ts > prev) readRef.current[rid] = ts;
-      }
-    }
-  };
-
   const getOtherUsername = () => {
     if (!selectedRoom || selectedRoom.t !== "d") return undefined;
     return (
@@ -305,63 +255,11 @@ export default function ChatLayout({
 
   useEffect(() => {
     if (!selectedRoom || !messagesRef.current) return;
-    const rid = selectedRoom.rid;
     const container = messagesRef.current;
-
-    const scrollToBottom = () => {
+    requestAnimationFrame(() => {
       container.scrollTop = container.scrollHeight;
-    };
-
-    if (!initialScrollDoneRef.current[rid]) {
-      const sub = rooms.find((r) => r.rid === rid);
-      const lsDate = toDate(sub?.ls);
-      const localReadMs = readRef.current[rid];
-      const lsMs = lsDate ? lsDate.getTime() : undefined;
-      const thresholdMs = Math.max(
-        typeof lsMs === "number" ? lsMs : -Infinity,
-        typeof localReadMs === "number" ? localReadMs : -Infinity
-      );
-      let targetIndex = -1;
-      if (Number.isFinite(thresholdMs)) {
-        targetIndex = messages.findIndex((m) => {
-          const mt = toDate(m.ts);
-          return mt ? mt.getTime() > thresholdMs : false;
-        });
-      } else if (typeof sub?.unread === "number" && sub.unread > 0) {
-        targetIndex = Math.max(messages.length - sub.unread, 0);
-      }
-      requestAnimationFrame(() => {
-        if (
-          targetIndex <= 0 ||
-          targetIndex === -1 ||
-          targetIndex >= container.children.length
-        ) {
-          scrollToBottom();
-        } else {
-          const child = container.children.item(
-            targetIndex
-          ) as HTMLElement | null;
-          if (child) container.scrollTop = Math.max(child.offsetTop - 8, 0);
-          else scrollToBottom();
-        }
-        const last = messages[messages.length - 1];
-        const lastMs = toDate(last?.ts)?.getTime();
-        if (typeof lastMs === "number") readRef.current[rid] = lastMs;
-        initialScrollDoneRef.current[rid] = true;
-      });
-      return;
-    }
-
-    const last = messages[messages.length - 1];
-    const mine = last && last.u?.username === meUsername;
-    const nearBottom = isNearBottom(container);
-
-    if (mine || nearBottom) {
-      requestAnimationFrame(scrollToBottom);
-      const lastMs = toDate(last?.ts)?.getTime();
-      if (typeof lastMs === "number") readRef.current[rid] = lastMs;
-    }
-  }, [messages, selectedRoom, rooms, meUsername]);
+    });
+  }, [messages, selectedRoom]);
 
   const handleStartDM = async () => {
     const target = userRole === "teacher" ? "student1" : "teacher1";
@@ -637,11 +535,7 @@ export default function ChatLayout({
 
         {selectedRoom ? (
           <>
-            <div
-              className={styles.messageList}
-              ref={messagesRef}
-              onScroll={handleMessageScroll}
-            >
+            <div className={styles.messageList} ref={messagesRef}>
               {messages.map((m, i) => {
                 const mine = m.u?.username === meUsername;
                 const label = (m.u?.username || "").toUpperCase();
