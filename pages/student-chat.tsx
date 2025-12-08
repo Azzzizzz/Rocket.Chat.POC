@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { AxiosError } from "axios";
+import { useRouter } from "next/router";
 import ChatLayout from "../components/ChatLayout";
 import * as rest from "../lib/rocketRest";
 import { RC_URL } from "../lib/config";
@@ -11,28 +11,33 @@ export default function StudentChat() {
     userId: string;
   } | null>(null);
   const [error, setError] = useState("");
+  const [me, setMe] = useState<string>("");
+  const router = useRouter();
 
   useEffect(() => {
     async function init() {
       let data: { authToken: string; userId: string } | null = null;
-      try {
-        console.log("Student login initiating...");
-        data = await rest.login("student1", "1234567");
-        setCreds(data);
-      } catch (err: unknown) {
-        console.error(err);
-        const axiosMsg = (err as AxiosError<{ message?: string }>).response
-          ?.data?.message;
-        const msg =
-          axiosMsg || (err instanceof Error ? err.message : "Unknown error");
-        setError(`REST login failed: ${msg}`);
+      const raw = localStorage.getItem("tikme.session");
+      if (!raw) {
+        router.push("/login");
         return;
       }
+      const session = JSON.parse(raw) as {
+        username: string;
+        authToken: string;
+        userId: string;
+        isTeacher?: boolean;
+      };
+      if (session.isTeacher) {
+        router.push("/teacher-chat");
+        return;
+      }
+      data = { authToken: session.authToken, userId: session.userId };
+      setCreds(data);
+      setMe(session.username);
       try {
         await ddp.connect(RC_URL);
-        if (data) {
-          await ddp.loginWithToken(data.authToken);
-        }
+        await ddp.loginWithToken(data.authToken);
       } catch (err) {
         console.warn("Realtime connection failed", err);
       }
@@ -41,18 +46,14 @@ export default function StudentChat() {
   }, []);
 
   if (error) return <div style={{ color: "red", padding: 20 }}>{error}</div>;
-  if (!creds)
-    return (
-      <div style={{ padding: 20 }}>
-        Logging in automatically as <strong>Student</strong>...
-      </div>
-    );
+  if (!creds) return <div style={{ padding: 20 }}>Loading Student view...</div>;
 
   return (
     <ChatLayout
-      userRole="student"
+      meUsername={me}
       authToken={creds.authToken}
       userId={creds.userId}
+      isTeacher={false}
     />
   );
 }

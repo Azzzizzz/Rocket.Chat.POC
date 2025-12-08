@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/router";
 import * as rest from "../lib/rocketRest";
 import * as ddp from "../lib/rocketDDP";
 import { RC_URL } from "../lib/config";
 import styles from "../styles/ChatLayout.module.css";
 
 interface ChatLayoutProps {
-  userRole: "teacher" | "student";
+  meUsername: string;
   authToken: string;
   userId: string;
+  isTeacher?: boolean;
 }
 
 type Room = {
@@ -25,6 +27,7 @@ type Message = {
   msg: string;
   rid?: string;
   ts?: string | Date;
+  t?: string;
   attachments?: Array<{
     image_url?: string;
     title_link?: string;
@@ -35,12 +38,16 @@ type Message = {
 };
 
 export default function ChatLayout({
-  userRole,
+  meUsername,
   authToken,
   userId,
+  isTeacher,
 }: ChatLayoutProps) {
+  const router = useRouter();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
+  const [unreadMap, setUnreadMap] = useState<Record<string, boolean>>({});
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({});
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState("");
   const [presence, setPresence] = useState<Record<string, string>>({});
@@ -60,23 +67,51 @@ export default function ChatLayout({
   // removed polling lastUpdate in favor of DDP realtime
   const subRef = useRef<{ id: string; rid: string } | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
-  const meUsername = userRole === "teacher" ? "teacher1" : "student1";
   const [showProfile, setShowProfile] = useState(false);
   const [dmHeaderInfo, setDmHeaderInfo] = useState<{
     username?: string;
     lastLogin?: string;
   } | null>(null);
 
+  const [addMembersOpen, setAddMembersOpen] = useState(false);
+  const [availableStudents, setAvailableStudents] = useState<
+    Array<{ _id: string; username: string; name?: string; roles?: string[] }>
+  >([]);
+  const [studentSearch, setStudentSearch] = useState("");
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [dmPickerOpen, setDmPickerOpen] = useState(false);
+  const [dmSearch, setDmSearch] = useState("");
+  const [dmSelectedUser, setDmSelectedUser] = useState<string | null>(null);
+  const getRoomIdKey = (r: Room & { _id?: string; id?: string }): string =>
+    r.rid || r._id || r.id || "";
   useEffect(() => {
     // Load initial rooms
-    rest.getSubscriptions(authToken, userId).then((data) => {
-      setRooms(data);
-    });
+    rest
+      .getSubscriptions(authToken, userId)
+      .then((data) => {
+        setRooms(data);
+        const marks: Record<string, boolean> = {};
+        const counts: Record<string, number> = {};
+        const list = data as Array<Room & { _id?: string; id?: string }>;
+        list.forEach((r) => {
+          const rid = getRoomIdKey(r);
+          const flag =
+            !!r.unreadAlert || (typeof r.unread === "number" && r.unread > 0);
+          if (rid) marks[rid] = flag;
+          counts[rid] = typeof r.unread === "number" ? r.unread : flag ? 1 : 0;
+        });
+        setUnreadMap(marks);
+        setUnreadCounts(counts);
+      })
+      .catch((err) => {
+        if (err instanceof Error && err.message === "unauthorized") {
+          router.push("/login");
+        }
+      });
 
     const fetchPresence = () => {
       const usernames = new Set<string>();
-      usernames.add("teacher1");
-      usernames.add("student1");
+      usernames.add(meUsername);
       members.forEach((m) => m.username && usernames.add(m.username));
       Array.from(usernames).forEach((u) => {
         rest.getPresence(u, authToken, userId).then((status) => {
@@ -88,7 +123,44 @@ export default function ChatLayout({
     const interval = setInterval(fetchPresence, 5000);
 
     return () => clearInterval(interval);
-  }, [authToken, userId, members]);
+  }, [authToken, userId, members, meUsername, router]);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      rest
+        .getSubscriptions(authToken, userId)
+        .then((data) => {
+          setRooms(data);
+          setUnreadMap((prev) => {
+            const next = { ...prev };
+            const list = data as Array<Room & { _id?: string; id?: string }>;
+            list.forEach((r) => {
+              const rid = getRoomIdKey(r);
+              const flag =
+                !!r.unreadAlert ||
+                (typeof r.unread === "number" && r.unread > 0);
+              if (rid) next[rid] = flag;
+            });
+            return next;
+          });
+          setUnreadCounts((prev) => {
+            const next = { ...prev };
+            const list = data as Array<Room & { _id?: string; id?: string }>;
+            list.forEach((r) => {
+              const rid = getRoomIdKey(r);
+              const flag =
+                !!r.unreadAlert ||
+                (typeof r.unread === "number" && r.unread > 0);
+              next[rid] =
+                typeof r.unread === "number" ? r.unread : flag ? 1 : 0;
+            });
+            return next;
+          });
+        })
+        .catch(() => {});
+    }, 5000);
+    return () => clearInterval(t);
+  }, [authToken, userId]);
 
   useEffect(() => {
     if (!selectedRoom) {
@@ -129,7 +201,7 @@ export default function ChatLayout({
           .catch(() => setDmHeaderInfo(null));
       }
     } else {
-      setDmHeaderInfo(null);
+      setTimeout(() => setDmHeaderInfo(null), 0);
     }
 
     (async () => {
@@ -253,6 +325,16 @@ export default function ChatLayout({
     setInputText("");
   };
 
+  const handleLogout = async () => {
+    try {
+      await rest.logout(authToken, userId);
+    } catch {}
+    try {
+      ddp.disconnect();
+    } catch {}
+    router.push("/login");
+  };
+
   useEffect(() => {
     if (!selectedRoom || !messagesRef.current) return;
     const container = messagesRef.current;
@@ -262,15 +344,61 @@ export default function ChatLayout({
   }, [messages, selectedRoom]);
 
   const handleStartDM = async () => {
-    const target = userRole === "teacher" ? "student1" : "teacher1";
+    if (isTeacher) {
+      try {
+        const users = await rest.listUsers(authToken, userId, 500, 0);
+        const usersList =
+          (users as Array<{
+            _id: string;
+            username: string;
+            name?: string;
+            roles?: string[];
+          }>) || [];
+        const students = usersList.filter((u) => {
+          const roles = Array.isArray(u.roles) ? u.roles : [];
+          const isOwner = roles.includes("owner");
+          return !isOwner && u.username !== meUsername;
+        });
+        setAvailableStudents(students);
+        setDmSelectedUser(null);
+        setDmSearch("");
+        setDmPickerOpen(true);
+      } catch {
+        alert("Failed to load students");
+      }
+      return;
+    }
+    const target = prompt("Enter teacher username to DM");
     try {
+      if (!target) return;
+      const info = await rest.getUserInfo(target, authToken, userId);
+      const can = Array.isArray(info?.roles) && info.roles.includes("owner");
+      if (!can) {
+        alert("Students can DM teachers only");
+        return;
+      }
       const room = await rest.createDM(target, authToken, userId);
       setRooms((prev) => {
         if (prev.find((r) => r.rid === room.rid)) return prev;
         return [...prev, room];
       });
       setSelectedRoom(room);
-    } catch (_) {
+    } catch {
+      alert("Error creating DM");
+    }
+  };
+
+  const handleConfirmDM = async () => {
+    if (!dmSelectedUser) return;
+    try {
+      const room = await rest.createDM(dmSelectedUser, authToken, userId);
+      setRooms((prev) => {
+        if (prev.find((r) => r.rid === room.rid)) return prev;
+        return [...prev, room];
+      });
+      setSelectedRoom(room);
+      setDmPickerOpen(false);
+    } catch {
       alert("Error creating DM");
     }
   };
@@ -289,18 +417,48 @@ export default function ChatLayout({
 
   const handleAddMember = async () => {
     if (!selectedRoom || selectedRoom.t === "d") return;
-    const username = prompt("Enter student username to add");
-    if (!username) return;
     try {
-      const user = await rest.getUserInfo(username, authToken, userId);
-      if (!user?._id) throw new Error("User not found");
-      await rest.inviteUserToRoom(
-        selectedRoom.rid,
-        selectedRoom.t,
-        user._id,
-        authToken,
-        userId
-      );
+      const users = await rest.listUsers(authToken, userId, 500, 0);
+      const currentIds = new Set(members.map((m) => m._id).filter(Boolean));
+      const usersList =
+        (users as Array<{
+          _id: string;
+          username: string;
+          name?: string;
+          roles?: string[];
+        }>) || [];
+      const students = usersList.filter((u) => {
+        const roles = Array.isArray(u.roles) ? u.roles : [];
+        const isOwner = roles.includes("owner");
+        return !isOwner && !currentIds.has(u._id);
+      });
+      setAvailableStudents(students);
+      setSelectedStudentIds([]);
+      setStudentSearch("");
+      setAddMembersOpen(true);
+    } catch (e) {
+      alert("Failed to load users");
+    }
+  };
+
+  const toggleStudentSelection = (id: string) => {
+    setSelectedStudentIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleInviteSelected = async () => {
+    if (!selectedRoom) return;
+    try {
+      for (const id of selectedStudentIds) {
+        await rest.inviteUserToRoom(
+          selectedRoom.rid,
+          selectedRoom.t,
+          id,
+          authToken,
+          userId
+        );
+      }
       const list = await rest.getRoomMembers(
         selectedRoom.rid,
         selectedRoom.t,
@@ -308,8 +466,9 @@ export default function ChatLayout({
         userId
       );
       setMembers(list);
-    } catch (e) {
-      alert("Failed to add member");
+      setAddMembersOpen(false);
+    } catch {
+      alert("Failed to add selected members");
     }
   };
 
@@ -347,12 +506,14 @@ export default function ChatLayout({
       {/* Sidebar */}
       <div className={styles.sidebar}>
         <div className={styles.sidebarHeader}>
-          <div className={styles.roleLabel}>{userRole} View</div>
+          <div className={styles.roleLabel}>
+            {isTeacher ? "Teacher" : "Student"} View
+          </div>
           <div className={styles.actionButtons}>
             <button onClick={handleStartDM} className={styles.primaryBtn}>
-              Message {userRole === "teacher" ? "Student" : "Teacher"}
+              New DM
             </button>
-            {userRole === "teacher" && (
+            {isTeacher && (
               <button
                 onClick={handleCreateChannel}
                 className={styles.secondaryBtn}
@@ -360,6 +521,9 @@ export default function ChatLayout({
                 + New Channel
               </button>
             )}
+            <button onClick={handleLogout} className={styles.secondaryBtn}>
+              Log Out
+            </button>
           </div>
         </div>
 
@@ -382,11 +546,18 @@ export default function ChatLayout({
                 const isDM = r.t === "d";
                 const otherUser = isDM ? r.name : null;
                 const status = otherUser ? presence[otherUser] : null; // 'online' | 'offline' | ...
+                const ridKey = getRoomIdKey(r);
 
                 return (
                   <div
                     key={r.rid}
-                    onClick={() => setSelectedRoom(r)}
+                    onClick={() => {
+                      const rid = getRoomIdKey(r);
+                      setSelectedRoom(r);
+                      setUnreadMap((m) => ({ ...m, [rid]: false }));
+                      setUnreadCounts((c) => ({ ...c, [rid]: 0 }));
+                      rest.markAsRead(rid, authToken, userId).catch(() => {});
+                    }}
                     className={`${styles.roomItem} ${
                       isSelected ? styles.selected : ""
                     }`}
@@ -410,6 +581,11 @@ export default function ChatLayout({
                         }`}
                       />
                     )}
+                    {!!unreadCounts[ridKey] && (
+                      <span className={styles.unreadBadge}>
+                        {unreadCounts[ridKey]}
+                      </span>
+                    )}
                   </div>
                 );
               })}
@@ -428,10 +604,17 @@ export default function ChatLayout({
                 const isSelected = selectedRoom?.rid === r.rid;
                 const otherUser = displayName;
                 const status = otherUser ? presence[otherUser] : null;
+                const ridKey = getRoomIdKey(r);
                 return (
                   <div
                     key={r.rid}
-                    onClick={() => setSelectedRoom(r)}
+                    onClick={() => {
+                      const rid = getRoomIdKey(r);
+                      setSelectedRoom(r);
+                      setUnreadMap((m) => ({ ...m, [rid]: false }));
+                      setUnreadCounts((c) => ({ ...c, [rid]: 0 }));
+                      rest.markAsRead(rid, authToken, userId).catch(() => {});
+                    }}
                     className={`${styles.roomItem} ${
                       isSelected ? styles.selected : ""
                     }`}
@@ -448,6 +631,11 @@ export default function ChatLayout({
                           status === "online" ? styles.statusOnline : ""
                         }`}
                       />
+                    )}
+                    {!!unreadCounts[ridKey] && (
+                      <span className={styles.unreadBadge}>
+                        {unreadCounts[ridKey]}
+                      </span>
                     )}
                   </div>
                 );
@@ -524,7 +712,7 @@ export default function ChatLayout({
               </span>
             )}
           </div>
-          {userRole === "teacher" && selectedRoom && selectedRoom.t !== "d" && (
+          {isTeacher && selectedRoom && selectedRoom.t !== "d" && (
             <div className={styles.headerActions}>
               <button className={styles.actionBtn} onClick={handleAddMember}>
                 Add People
@@ -536,85 +724,92 @@ export default function ChatLayout({
         {selectedRoom ? (
           <>
             <div className={styles.messageList} ref={messagesRef}>
-              {messages.map((m, i) => {
-                const mine = m.u?.username === meUsername;
-                const label = (m.u?.username || "").toUpperCase();
-                const initials = label.slice(0, 2);
-                const mediaUrl = buildMediaUrl(m);
-                return (
-                  <div
-                    key={m._id || i}
-                    className={`${styles.message} ${
-                      mine ? styles.mine : styles.theirs
-                    }`}
-                  >
-                    {!mine && (
-                      <div className={`${styles.avatar} ${styles.avatarLeft}`}>
-                        {initials}
-                      </div>
-                    )}
-                    <div className={styles.messageContainer}>
-                      <div className={styles.messageMeta}>
-                        <span
-                          onClick={() => openUserInfo(m.u?.username)}
-                          style={{ cursor: "pointer" }}
+              {messages
+                .filter((mx) => !mx.t)
+                .map((m, i) => {
+                  const mine = m.u?.username === meUsername;
+                  const label = (m.u?.username || "").toUpperCase();
+                  const initials = label.slice(0, 2);
+                  const mediaUrl = buildMediaUrl(m);
+                  return (
+                    <div
+                      key={m._id || i}
+                      className={`${styles.message} ${
+                        mine ? styles.mine : styles.theirs
+                      }`}
+                    >
+                      {!mine && (
+                        <div
+                          className={`${styles.avatar} ${styles.avatarLeft}`}
                         >
-                          {m.u?.username}
-                        </span>
-                        <span className={styles.timestamp}>
-                          {formatTime(m.ts)}
-                        </span>
-                      </div>
-                      {mediaUrl ? (
-                        <div className={styles.messageContent}>
-                          {mediaUrl.match(/\.(png|jpg|jpeg|gif|webp)(\?|$)/i) ||
-                          m.attachments?.[0]?.image_url ? (
-                            <img
-                              src={mediaUrl}
-                              alt={
-                                m.attachments?.[0]?.title ||
-                                m.file?.name ||
-                                "attachment"
-                              }
-                              className={styles.messageImage}
-                            />
-                          ) : (
-                            <a
-                              href={mediaUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className={styles.messageLink}
-                            >
-                              {m.attachments?.[0]?.title ||
-                                m.file?.name ||
-                                mediaUrl}
-                            </a>
-                          )}
-                          <div style={{ marginTop: 6 }}>
-                            <a
-                              href={mediaUrl}
-                              download
-                              className={styles.downloadLink}
-                            >
-                              Download
-                            </a>
-                          </div>
-                          {m.msg && (
-                            <div className={styles.messageText}>{m.msg}</div>
-                          )}
+                          {initials}
                         </div>
-                      ) : (
-                        <div className={styles.messageContent}>{m.msg}</div>
+                      )}
+                      <div className={styles.messageContainer}>
+                        <div className={styles.messageMeta}>
+                          <span
+                            onClick={() => openUserInfo(m.u?.username)}
+                            style={{ cursor: "pointer" }}
+                          >
+                            {m.u?.username}
+                          </span>
+                          <span className={styles.timestamp}>
+                            {formatTime(m.ts)}
+                          </span>
+                        </div>
+                        {mediaUrl ? (
+                          <div className={styles.messageContent}>
+                            {mediaUrl.match(
+                              /\.(png|jpg|jpeg|gif|webp)(\?|$)/i
+                            ) || m.attachments?.[0]?.image_url ? (
+                              <img
+                                src={mediaUrl}
+                                alt={
+                                  m.attachments?.[0]?.title ||
+                                  m.file?.name ||
+                                  "attachment"
+                                }
+                                className={styles.messageImage}
+                              />
+                            ) : (
+                              <a
+                                href={mediaUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className={styles.messageLink}
+                              >
+                                {m.attachments?.[0]?.title ||
+                                  m.file?.name ||
+                                  mediaUrl}
+                              </a>
+                            )}
+                            <div style={{ marginTop: 6 }}>
+                              <a
+                                href={mediaUrl}
+                                download
+                                className={styles.downloadLink}
+                              >
+                                Download
+                              </a>
+                            </div>
+                            {m.msg && (
+                              <div className={styles.messageText}>{m.msg}</div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className={styles.messageContent}>{m.msg}</div>
+                        )}
+                      </div>
+                      {mine && (
+                        <div
+                          className={`${styles.avatar} ${styles.avatarRight}`}
+                        >
+                          {initials}
+                        </div>
                       )}
                     </div>
-                    {mine && (
-                      <div className={`${styles.avatar} ${styles.avatarRight}`}>
-                        {initials}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
               {!messages.length && (
                 <div className={styles.emptyState}>
                   No messages yet. Say hello!
@@ -722,6 +917,120 @@ export default function ChatLayout({
           </div>
         )}
       </div>
+
+      {addMembersOpen && (
+        <div className={styles.modalBackdrop}>
+          <div className={styles.modalPanel}>
+            <div className={styles.modalTitle}>Add Students</div>
+            <input
+              className={styles.searchInput}
+              placeholder="Search students"
+              value={studentSearch}
+              onChange={(e) => setStudentSearch(e.target.value)}
+            />
+            <div className={styles.modalList}>
+              {availableStudents
+                .filter((u) => {
+                  const q = studentSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    u.username.toLowerCase().includes(q) ||
+                    (u.name || "").toLowerCase().includes(q)
+                  );
+                })
+                .map((u) => (
+                  <label key={u._id} className={styles.modalItem}>
+                    <input
+                      type="checkbox"
+                      checked={selectedStudentIds.includes(u._id)}
+                      onChange={() => toggleStudentSelection(u._id)}
+                    />
+                    <span style={{ marginLeft: 8 }}>
+                      {u.username} {u.name ? `(${u.name})` : ""}
+                    </span>
+                  </label>
+                ))}
+              {!availableStudents.length && (
+                <div style={{ fontSize: 13, color: "#6b7075" }}>
+                  No students found
+                </div>
+              )}
+            </div>
+            <div className={styles.modalActions}>
+              <button
+                className={styles.primaryBtn}
+                onClick={handleInviteSelected}
+                disabled={!selectedStudentIds.length}
+              >
+                Add Selected
+              </button>
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => setAddMembersOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {dmPickerOpen && (
+        <div className={styles.modalBackdrop}>
+          <div className={styles.modalPanel}>
+            <div className={styles.modalTitle}>Start DM with Student</div>
+            <input
+              className={styles.searchInput}
+              placeholder="Search students"
+              value={dmSearch}
+              onChange={(e) => setDmSearch(e.target.value)}
+            />
+            <div className={styles.modalList}>
+              {availableStudents
+                .filter((u) => {
+                  const q = dmSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return (
+                    u.username.toLowerCase().includes(q) ||
+                    (u.name || "").toLowerCase().includes(q)
+                  );
+                })
+                .map((u) => (
+                  <label key={u._id} className={styles.modalItem}>
+                    <input
+                      type="radio"
+                      name="dm-target"
+                      checked={dmSelectedUser === u.username}
+                      onChange={() => setDmSelectedUser(u.username)}
+                    />
+                    <span style={{ marginLeft: 8 }}>
+                      {u.username} {u.name ? `(${u.name})` : ""}
+                    </span>
+                  </label>
+                ))}
+              {!availableStudents.length && (
+                <div style={{ fontSize: 13, color: "#6b7075" }}>
+                  No students found
+                </div>
+              )}
+            </div>
+            <div className={styles.modalActions}>
+              <button
+                className={styles.primaryBtn}
+                onClick={handleConfirmDM}
+                disabled={!dmSelectedUser}
+              >
+                Start DM
+              </button>
+              <button
+                className={styles.secondaryBtn}
+                onClick={() => setDmPickerOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

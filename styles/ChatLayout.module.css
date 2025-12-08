@@ -168,6 +168,27 @@
 .statusOnline {
   background-color: #22c55e;
 }
+.unreadDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #f97316;
+  margin-left: 6px;
+}
+.unreadBadge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  background-color: #3b82f6;
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  margin-left: 8px;
+}
 
 /* Main Chat Area */
 .chatArea {
@@ -496,4 +517,55 @@
 }
 .sidebarUserCard {
   padding: 8px;
+}
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+}
+.modalPanel {
+  width: 520px;
+  max-width: 90vw;
+  background: #ffffff;
+  border: 1px solid #e6e8ec;
+  border-radius: 12px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.16);
+  padding: 16px;
+}
+.modalTitle {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.searchInput {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #e6e8ec;
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+.modalList {
+  max-height: 320px;
+  overflow: auto;
+  border: 1px solid #eef0f3;
+  border-radius: 8px;
+  padding: 8px;
+  background: #fafbff;
+}
+.modalItem {
+  display: flex;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.modalItem:hover {
+  background: #f1f5ff;
+}
+.modalActions {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }

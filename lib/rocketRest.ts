@@ -5,21 +5,30 @@ export const api = axios.create({
   baseURL: "/api/rc",
 });
 
-export const login = async (user: string, password: string) => {
-  try {
-    const res = await api.post("/login", { user, password });
-    return res.data.data; // { authToken, userId }
-  } catch (err) {
-    console.error("Login failed", err);
-    throw err;
+export const login = async (
+  user: string,
+  password: string
+): Promise<{ authToken: string; userId: string } | null> => {
+  const res = await api.post(
+    "/login",
+    { user, password },
+    { validateStatus: () => true }
+  );
+  if (res.status >= 200 && res.status < 300 && res.data?.data) {
+    return res.data.data as { authToken: string; userId: string };
   }
+  return null;
 };
 
 export const getSubscriptions = async (authToken: string, userId: string) => {
   const res = await api.get("/subscriptions.get", {
     headers: { "X-Auth-Token": authToken, "X-User-Id": userId },
+    validateStatus: () => true,
   });
-  return res.data.update; // List of rooms
+  if (res.status === 401 || res.data?.success === false) {
+    throw new Error("unauthorized");
+  }
+  return res.data.update || [];
 };
 
 export const getRoomHistory = async (
@@ -144,6 +153,23 @@ export const getUserInfo = async (
   return res.data.user; // { _id, username, name, ... }
 };
 
+export const listUsers = async (
+  authToken: string,
+  userId: string,
+  count = 200,
+  offset = 0
+) => {
+  try {
+    const res = await api.get("/users.list", {
+      params: { count, offset },
+      headers: { "X-Auth-Token": authToken, "X-User-Id": userId },
+    });
+    return res.data.users || [];
+  } catch {
+    return [];
+  }
+};
+
 export const getRoomMembers = async (
   rid: string,
   type: string,
@@ -199,5 +225,32 @@ export const uploadFile = async (
       "X-User-Id": userId,
     },
   });
+  return res.data;
+};
+
+export const logout = async (authToken: string, userId: string) => {
+  try {
+    const res = await api.post(
+      "/logout",
+      {},
+      { headers: { "X-Auth-Token": authToken, "X-User-Id": userId } }
+    );
+    return res.data;
+  } catch (err) {
+    // Best-effort logout; swallow errors to allow client cleanup
+    return { success: false } as Record<string, unknown>;
+  }
+};
+
+export const markAsRead = async (
+  rid: string,
+  authToken: string,
+  userId: string
+) => {
+  const res = await api.post(
+    "/subscriptions.read",
+    { rid },
+    { headers: { "X-Auth-Token": authToken, "X-User-Id": userId } }
+  );
   return res.data;
 };
