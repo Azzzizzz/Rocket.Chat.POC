@@ -70,12 +70,16 @@ REST client is configured to use `'/api/rc'`: `tikme-chat-poc/lib/rocketRest.ts:
 
 - Connects to `ws://127.0.0.1:2000/websocket`.
 - Resumes session with REST `authToken`.
-- Subscribes to `stream-room-messages` for the selected room.
+- Subscribes to `stream-room-messages` for the selected room (messages).
+- Subscribes to `stream-notify-user` events for the current user to update unread counts in realtime:
+  - `${userId}/subscriptions-changed`
+  - `${userId}/rooms-changed`
 
 References:
-- Connect + login: `tikme-chat-poc/pages/teacher-chat.tsx:32-41`, `tikme-chat-poc/pages/student-chat.tsx:33-41`
+- Connect + login: `tikme-chat-poc/pages/teacher-chat.tsx:40-41`, `tikme-chat-poc/pages/student-chat.tsx:39-40`
 - DDP client: `tikme-chat-poc/lib/rocketDDP.ts`
-- Room subscription wiring: `tikme-chat-poc/components/ChatLayout.tsx:74-82`
+- Room subscription wiring: `tikme-chat-poc/components/ChatLayout.tsx:190-213`
+- Unread notifications wiring: `tikme-chat-poc/components/ChatLayout.tsx:148-200`
 
 ## 5) Demo Flow
 
@@ -96,24 +100,35 @@ If these users don’t exist, create them in the Rocket.Chat admin UI.
 - Presence polling displays online/offline in room list and participants.
 - Code references:
   - Participants list: `tikme-chat-poc/components/ChatLayout.tsx:285-314`
-  - Presence polling: `tikme-chat-poc/components/ChatLayout.tsx:43-53`
+  - Presence polling: `tikme-chat-poc/components/ChatLayout.tsx:108-121`
   - REST helpers: `tikme-chat-poc/lib/rocketRest.ts:77-91, 122-170`
 
-## 7) Useful Scripts
+## 7) Unread Counts & Badges
+
+- The sidebar shows a blue circular badge with the unread message count for each room.
+- Counts are driven by realtime DDP user notifications and periodically reconciled by REST polling.
+- Selecting a room clears the local count and calls `POST /subscriptions.read` to mark the room as read on the server.
+- Code references:
+  - Badge rendering: `tikme-chat-poc/components/ChatLayout.tsx:556-560, 599-603`
+  - Server mark-as-read: `tikme-chat-poc/lib/rocketRest.ts:244-256`
+  - Fallback polling: `tikme-chat-poc/components/ChatLayout.tsx:124-146`
+
+## 8) Useful Scripts
 
 ```bash
 npm run lint      # ESLint
-npm run build     # Next build
+npm run build -- --webpack  # Next build using webpack (if Turbopack complains)
 npm run start     # Next start (production)
 ```
 
-## 8) Troubleshooting
+## 9) Troubleshooting
 
 - Proxy 404: ensure you opened the app on the port where the rewrite is active.
 - Dev lock error: remove `.next/dev/lock` and restart.
 - Realtime not updating: verify Rocket.Chat is reachable at `ws://127.0.0.1:2000/websocket`.
+ - Build error about Turbopack and custom webpack: run `npm run build -- --webpack` or add an empty `turbopack: {}` to `next.config.ts`.
 
-## 9) Docker Compose File
+## 10) Docker Compose File
 
 The compose file lives at repository root: `docker-compose.yml`. It brings up Rocket.Chat and MongoDB with ports mapped for local development. Use `docker compose up -d` to start and `docker compose down` to stop.
 
