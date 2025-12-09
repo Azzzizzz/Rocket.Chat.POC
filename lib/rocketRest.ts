@@ -20,13 +20,30 @@ export const login = async (
   return null;
 };
 
+export const resume = async (
+  resumeToken: string
+): Promise<{ authToken: string; userId: string } | null> => {
+  const res = await api.post(
+    "/login",
+    { resume: resumeToken },
+    { validateStatus: () => true }
+  );
+  if (res.status >= 200 && res.status < 300 && res.data?.data) {
+    return res.data.data as { authToken: string; userId: string };
+  }
+  return null;
+};
+
 export const getSubscriptions = async (authToken: string, userId: string) => {
   const res = await api.get("/subscriptions.get", {
     headers: { "X-Auth-Token": authToken, "X-User-Id": userId },
     validateStatus: () => true,
   });
-  if (res.status === 401 || res.data?.success === false) {
+  if (res.status === 401 || res.status === 403) {
     throw new Error("unauthorized");
+  }
+  if (res.data?.success === false) {
+    throw new Error("rc_failed");
   }
   return res.data.update || [];
 };
@@ -35,22 +52,39 @@ export const getRoomHistory = async (
   rid: string,
   type: string,
   authToken: string,
-  userId: string
+  userId: string,
+  options?: { signal?: AbortSignal }
 ) => {
   let endpoint = "/channels.history";
   if (type === "d") endpoint = "/im.history";
   if (type === "p") endpoint = "/groups.history";
-
-  try {
-    const res = await api.get(endpoint, {
-      params: { roomId: rid, count: 50 },
-      headers: { "X-Auth-Token": authToken, "X-User-Id": userId },
-    });
-    return res.data.messages;
-  } catch (err) {
-    console.error("History error", err);
-    return [];
+  let lastErr: unknown = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const res = await api.get(endpoint, {
+        params: { roomId: rid, count: 50 },
+        headers: { "X-Auth-Token": authToken, "X-User-Id": userId },
+        signal: options?.signal,
+      });
+      return res.data.messages;
+    } catch (err: unknown) {
+      lastErr = err;
+      const status = (err as { response?: { status?: number } })?.response
+        ?.status;
+      if (status === 401 || status === 403) throw err;
+      const retryable =
+        status === 429 ||
+        (status !== undefined && status >= 500) ||
+        status === undefined;
+      if (!retryable) throw err;
+      const backoff = Math.min(
+        1000 * Math.pow(2, i) + Math.floor(Math.random() * 250),
+        2500
+      );
+      await new Promise((r) => setTimeout(r, backoff));
+    }
   }
+  throw lastErr as Error;
 };
 
 export const createDM = async (
@@ -174,21 +208,40 @@ export const getRoomMembers = async (
   rid: string,
   type: string,
   authToken: string,
-  userId: string
+  userId: string,
+  options?: { signal?: AbortSignal }
 ) => {
   let endpoint = "/channels.members";
   if (type === "p") endpoint = "/groups.members";
   if (type === "d") endpoint = "/im.members";
-  try {
-    const res = await api.get(endpoint, {
-      params: { roomId: rid },
-      headers: { "X-Auth-Token": authToken, "X-User-Id": userId },
-    });
-    const key = type === "p" ? "members" : type === "d" ? "members" : "members";
-    return res.data[key] || [];
-  } catch {
-    return [];
+  let lastErr: unknown = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const res = await api.get(endpoint, {
+        params: { roomId: rid },
+        headers: { "X-Auth-Token": authToken, "X-User-Id": userId },
+        signal: options?.signal,
+      });
+      const key = "members";
+      return res.data[key] || [];
+    } catch (err: unknown) {
+      lastErr = err;
+      const status = (err as { response?: { status?: number } })?.response
+        ?.status;
+      if (status === 401 || status === 403) throw err;
+      const retryable =
+        status === 429 ||
+        (status !== undefined && status >= 500) ||
+        status === undefined;
+      if (!retryable) throw err;
+      const backoff = Math.min(
+        1000 * Math.pow(2, i) + Math.floor(Math.random() * 250),
+        2500
+      );
+      await new Promise((r) => setTimeout(r, backoff));
+    }
   }
+  throw lastErr as Error;
 };
 
 export const inviteUserToRoom = async (

@@ -3,6 +3,9 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   /* config options here */
   reactStrictMode: true,
+  env: {
+    NEXT_PUBLIC_RC_CLOUD_DISABLED: "true",
+  },
   webpack: (config) => {
     config.resolve.fallback = {
       ...config.resolve.fallback,
@@ -17,8 +20,8 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return [
       {
-        source: '/api/rc/:path*',
-        destination: 'http://127.0.0.1:2000/api/v1/:path*',
+        source: "/api/rc/:path*",
+        destination: "http://127.0.0.1:1000/api/v1/:path*",
       },
     ];
   },

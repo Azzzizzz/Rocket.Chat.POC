@@ -84,6 +84,12 @@ export default function ChatLayout({
   const [dmSelectedUser, setDmSelectedUser] = useState<string | null>(null);
   const getRoomIdKey = (r: Room & { _id?: string; id?: string }): string =>
     r.rid || r._id || r.id || "";
+  const messagesCacheRef = useRef<
+    Map<string, { data: Message[]; lastUpdateISO: string }>
+  >(new Map());
+  const presenceInFlightRef = useRef<boolean>(false);
+  const pollPauseUntilRef = useRef<number>(0);
+  const cloudDisabled = process.env.NEXT_PUBLIC_RC_CLOUD_DISABLED === "true";
   useEffect(() => {
     // Load initial rooms
     rest
@@ -110,23 +116,30 @@ export default function ChatLayout({
       });
 
     const fetchPresence = () => {
+      if (presenceInFlightRef.current) return;
+      presenceInFlightRef.current = true;
       const usernames = new Set<string>();
       usernames.add(meUsername);
       members.forEach((m) => m.username && usernames.add(m.username));
-      Array.from(usernames).forEach((u) => {
-        rest.getPresence(u, authToken, userId).then((status) => {
-          setPresence((prev) => ({ ...prev, [u]: status }));
-        });
+      Promise.all(
+        Array.from(usernames).map((u) =>
+          rest.getPresence(u, authToken, userId).then((status) => {
+            setPresence((prev) => ({ ...prev, [u]: status }));
+          })
+        )
+      ).finally(() => {
+        presenceInFlightRef.current = false;
       });
     };
     fetchPresence();
-    const interval = setInterval(fetchPresence, 5000);
+    const interval = setInterval(fetchPresence, 10000);
 
     return () => clearInterval(interval);
   }, [authToken, userId, members, meUsername, router]);
 
   useEffect(() => {
-    const t = setInterval(() => {
+    let stopped = false;
+    const run = () => {
       rest
         .getSubscriptions(authToken, userId)
         .then((data) => {
@@ -157,9 +170,28 @@ export default function ChatLayout({
             return next;
           });
         })
-        .catch(() => {});
-    }, 5000);
-    return () => clearInterval(t);
+        .catch(() => {})
+        .finally(() => {
+          const base = 10000;
+          const jitter = 200 + Math.floor(Math.random() * 600);
+          let delay = base + jitter;
+          const now = Date.now();
+          if (pollPauseUntilRef.current && pollPauseUntilRef.current > now) {
+            delay = pollPauseUntilRef.current - now + Math.floor(base / 2);
+          }
+          if (!stopped) {
+            pollRef.current = setTimeout(run, delay);
+          }
+        });
+    };
+    run();
+    return () => {
+      stopped = true;
+      if (pollRef.current) {
+        clearTimeout(pollRef.current);
+        pollRef.current = null;
+      }
+    };
   }, [authToken, userId]);
 
   useEffect(() => {
@@ -222,17 +254,60 @@ export default function ChatLayout({
       return;
     }
 
-    rest
-      .getRoomHistory(selectedRoom.rid, selectedRoom.t, authToken, userId)
-      .then((msgs) => {
-        if (msgs) setMessages((msgs as Message[]).reverse());
-      });
+    const historyCtrl = new AbortController();
+    const membersCtrl = new AbortController();
+    const cache = messagesCacheRef.current.get(selectedRoom.rid);
+    if (cache && Array.isArray(cache.data)) {
+      setMessages(cache.data);
+      rest
+        .syncMessages(selectedRoom.rid, cache.lastUpdateISO, authToken, userId)
+        .then((res) => {
+          const base = cache.data.slice();
+          const obj = res as Record<string, unknown>;
+          const msgs = (obj["messages"] as Message[]) || [];
+          const updated = (obj["updated"] as Message[]) || [];
+          const add = ([] as Message[]).concat(msgs).concat(updated);
+          const map = new Map<string, Message>();
+          base.forEach((m) => {
+            if (m._id) map.set(m._id, m);
+          });
+          add.forEach((m) => {
+            if (m && m._id) map.set(m._id, m);
+          });
+          const merged = Array.from(map.values());
+          setMessages(merged);
+          messagesCacheRef.current.set(selectedRoom.rid, {
+            data: merged,
+            lastUpdateISO: new Date().toISOString(),
+          });
+        })
+        .catch(() => {});
+    } else {
+      rest
+        .getRoomHistory(selectedRoom.rid, selectedRoom.t, authToken, userId, {
+          signal: historyCtrl.signal,
+        })
+        .then((msgs) => {
+          if (Array.isArray(msgs)) {
+            const arr = (msgs as Message[]).reverse();
+            setMessages(arr);
+            messagesCacheRef.current.set(selectedRoom.rid, {
+              data: arr,
+              lastUpdateISO: new Date().toISOString(),
+            });
+          }
+        })
+        .catch(() => {});
+    }
 
     rest
-      .getRoomMembers(selectedRoom.rid, selectedRoom.t, authToken, userId)
+      .getRoomMembers(selectedRoom.rid, selectedRoom.t, authToken, userId, {
+        signal: membersCtrl.signal,
+      })
       .then((list) => {
         setMembers(list);
-      });
+      })
+      .catch(() => {});
 
     if (selectedRoom.t === "d") {
       const otherUser = selectedRoom.name || selectedRoom.fname || undefined;
@@ -268,10 +343,19 @@ export default function ChatLayout({
                 const next = prev.slice();
                 next.splice(i, 1);
                 next.push(m);
+                messagesCacheRef.current.set(selectedRoom.rid, {
+                  data: next,
+                  lastUpdateISO: new Date().toISOString(),
+                });
                 return next;
               }
             }
-            return [...prev, m];
+            const next = [...prev, m];
+            messagesCacheRef.current.set(selectedRoom.rid, {
+              data: next,
+              lastUpdateISO: new Date().toISOString(),
+            });
+            return next;
           });
         });
         subRef.current = { id, rid: selectedRoom.rid };
@@ -287,6 +371,12 @@ export default function ChatLayout({
         ddp.unsubscribe(subRef.current.id, subRef.current.rid);
         subRef.current = null;
       }
+      try {
+        historyCtrl.abort();
+      } catch {}
+      try {
+        membersCtrl.abort();
+      } catch {}
     };
   }, [selectedRoom, authToken, userId]);
 
@@ -552,6 +642,20 @@ export default function ChatLayout({
     <div className={styles.container}>
       {/* Sidebar */}
       <div className={styles.sidebar}>
+        {cloudDisabled && (
+          <div
+            style={{
+              background: "#ffe8cc",
+              color: "#5f3c00",
+              padding: 8,
+              borderRadius: 6,
+              margin: "0 8px 8px",
+              fontSize: 12,
+            }}
+          >
+            Cloud connectivity disabled. Marketplace and push are unavailable.
+          </div>
+        )}
         <div className={styles.sidebarHeader}>
           <div className={styles.roleLabel}>
             {isTeacher ? "Teacher" : "Student"} View
@@ -600,6 +704,7 @@ export default function ChatLayout({
                     key={r.rid}
                     onClick={() => {
                       const rid = getRoomIdKey(r);
+                      pollPauseUntilRef.current = Date.now() + 1200;
                       setSelectedRoom(r);
                       setUnreadMap((m) => ({ ...m, [rid]: false }));
                       setUnreadCounts((c) => ({ ...c, [rid]: 0 }));
@@ -657,6 +762,7 @@ export default function ChatLayout({
                     key={r.rid}
                     onClick={() => {
                       const rid = getRoomIdKey(r);
+                      pollPauseUntilRef.current = Date.now() + 1200;
                       setSelectedRoom(r);
                       setUnreadMap((m) => ({ ...m, [rid]: false }));
                       setUnreadCounts((c) => ({ ...c, [rid]: 0 }));

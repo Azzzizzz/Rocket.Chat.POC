@@ -50,7 +50,7 @@ export default function Login() {
         roles,
         isTeacher,
       };
-      localStorage.setItem("tikme.session", JSON.stringify(session));
+      sessionStorage.setItem("tikme.session", JSON.stringify(session));
       router.push(isTeacher ? "/teacher-chat" : "/student-chat");
     } catch {
       router.push("/");

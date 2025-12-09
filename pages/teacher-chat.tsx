@@ -17,7 +17,7 @@ export default function TeacherChat() {
   useEffect(() => {
     async function init() {
       let data: { authToken: string; userId: string } | null = null;
-      const raw = localStorage.getItem("tikme.session");
+      const raw = sessionStorage.getItem("tikme.session");
       if (!raw) {
         router.push("/login");
         return;
@@ -32,7 +32,19 @@ export default function TeacherChat() {
         router.push("/student-chat");
         return;
       }
-      data = { authToken: session.authToken, userId: session.userId };
+      // Refresh the session using resume token to avoid intermittent 401s
+      const refreshed = await rest.resume(session.authToken);
+      if (refreshed) {
+        data = refreshed;
+        const next = {
+          ...session,
+          authToken: refreshed.authToken,
+          userId: refreshed.userId,
+        };
+        sessionStorage.setItem("tikme.session", JSON.stringify(next));
+      } else {
+        data = { authToken: session.authToken, userId: session.userId };
+      }
       setCreds(data);
       setMe(session.username);
 
