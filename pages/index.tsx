@@ -40,9 +40,15 @@ export default function Home() {
             <p>Choose a view or sign in:</p>
           </div>
           <div className={styles.ctas}>
-            <Link className={styles.primary} href="/teacher-chat">Teacher Chat</Link>
-            <Link className={styles.secondary} href="/student-chat">Student Chat</Link>
-            <Link className={styles.secondary} href="/login">Login</Link>
+            <Link className={styles.primary} href="/teacher-chat">
+              Teacher Chat
+            </Link>
+            <Link className={styles.secondary} href="/student-chat">
+              Student Chat
+            </Link>
+            <Link className={styles.secondary} href="/login">
+              Login
+            </Link>
           </div>
         </main>
       </div>

@@ -82,6 +82,7 @@ export default function ChatLayout({
   const [dmPickerOpen, setDmPickerOpen] = useState(false);
   const [dmSearch, setDmSearch] = useState("");
   const [dmSelectedUser, setDmSelectedUser] = useState<string | null>(null);
+  const globalRoomSubsRef = useRef<Map<string, string>>(new Map());
   const getRoomIdKey = (r: Room & { _id?: string; id?: string }): string =>
     r.rid || r._id || r.id || "";
   const messagesCacheRef = useRef<
@@ -90,6 +91,61 @@ export default function ChatLayout({
   const presenceInFlightRef = useRef<boolean>(false);
   const pollPauseUntilRef = useRef<number>(0);
   const cloudDisabled = process.env.NEXT_PUBLIC_RC_CLOUD_DISABLED === "true";
+  const unreadRecalcTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pendingUnreadRef = useRef<Set<string>>(new Set());
+  const scheduleUnreadRecalc = () => {
+    if (unreadRecalcTimerRef.current) return;
+    unreadRecalcTimerRef.current = setTimeout(async () => {
+      try {
+        const data = await rest.getSubscriptions(authToken, userId);
+        setRooms(data);
+        const marks: Record<string, boolean> = {};
+        const counts: Record<string, number> = {};
+        const list = data as Array<Room & { _id?: string; id?: string }>;
+        list.forEach((r) => {
+          const rid = getRoomIdKey(r);
+          const flag =
+            !!r.unreadAlert || (typeof r.unread === "number" && r.unread > 0);
+          if (rid) {
+            marks[rid] = flag;
+            counts[rid] =
+              typeof r.unread === "number" ? r.unread : flag ? 1 : 0;
+          }
+        });
+        setUnreadMap((prev) => {
+          const next = { ...prev };
+          const keys = new Set<string>([
+            ...Object.keys(prev),
+            ...Object.keys(marks),
+          ]);
+          keys.forEach((rid) => {
+            next[rid] = !!prev[rid] || !!marks[rid];
+          });
+          return next;
+        });
+        setUnreadCounts((prev) => {
+          const next = { ...prev };
+          const keys = new Set<string>([
+            ...Object.keys(prev),
+            ...Object.keys(counts),
+          ]);
+          keys.forEach((rid) => {
+            const server = counts[rid] || 0;
+            const local = prev[rid] || 0;
+            next[rid] = Math.max(local, server);
+          });
+          return next;
+        });
+      } catch {
+      } finally {
+        if (unreadRecalcTimerRef.current) {
+          clearTimeout(unreadRecalcTimerRef.current);
+          unreadRecalcTimerRef.current = null;
+        }
+        pendingUnreadRef.current.clear();
+      }
+    }, 250);
+  };
   useEffect(() => {
     // Load initial rooms
     rest
@@ -152,7 +208,7 @@ export default function ChatLayout({
               const flag =
                 !!r.unreadAlert ||
                 (typeof r.unread === "number" && r.unread > 0);
-              if (rid) next[rid] = flag;
+              if (rid) next[rid] = !!prev[rid] || flag;
             });
             return next;
           });
@@ -164,16 +220,17 @@ export default function ChatLayout({
               const flag =
                 !!r.unreadAlert ||
                 (typeof r.unread === "number" && r.unread > 0);
-              next[rid] =
+              const server =
                 typeof r.unread === "number" ? r.unread : flag ? 1 : 0;
+              next[rid] = Math.max(prev[rid] || 0, server);
             });
             return next;
           });
         })
         .catch(() => {})
         .finally(() => {
-          const base = 10000;
-          const jitter = 200 + Math.floor(Math.random() * 600);
+          const base = 3000;
+          const jitter = 100 + Math.floor(Math.random() * 300);
           let delay = base + jitter;
           const now = Date.now();
           if (pollPauseUntilRef.current && pollPauseUntilRef.current > now) {
@@ -193,6 +250,51 @@ export default function ChatLayout({
       }
     };
   }, [authToken, userId]);
+
+  useEffect(() => {
+    const subs = globalRoomSubsRef.current;
+    const want = new Set<string>(
+      rooms.map((r) => r.rid).filter(Boolean) as string[]
+    );
+    if (selectedRoom?.rid) want.delete(selectedRoom.rid);
+    for (const rid of want) {
+      if (!subs.has(rid)) {
+        try {
+          const id = ddp.subscribeRoomMessages(rid, (msg) => {
+            const m = msg as unknown as Message;
+            if (selectedRoom?.rid !== rid) {
+              setUnreadMap((prev) => ({ ...prev, [rid]: true }));
+              if (!pendingUnreadRef.current.has(rid)) {
+                pendingUnreadRef.current.add(rid);
+                setUnreadCounts((prev) => ({
+                  ...prev,
+                  [rid]: (prev[rid] || 0) + 1,
+                }));
+              }
+              scheduleUnreadRecalc();
+            }
+          });
+          subs.set(rid, id);
+        } catch {}
+      }
+    }
+    for (const [rid, id] of Array.from(subs.entries())) {
+      if (!want.has(rid)) {
+        ddp.unsubscribe(id, rid);
+        subs.delete(rid);
+      }
+    }
+    return () => {
+      for (const [rid, id] of Array.from(subs.entries())) {
+        ddp.unsubscribe(id, rid);
+        subs.delete(rid);
+      }
+      if (unreadRecalcTimerRef.current) {
+        clearTimeout(unreadRecalcTimerRef.current);
+        unreadRecalcTimerRef.current = null;
+      }
+    };
+  }, [rooms, selectedRoom]);
 
   useEffect(() => {
     // Realtime unread updates via DDP user notifications
@@ -216,6 +318,50 @@ export default function ChatLayout({
               setUnreadCounts((prev) => ({ ...prev, [rid]: count }));
               setUnreadMap((prev) => ({ ...prev, [rid]: count > 0 }));
             }
+            const evt = (event || "") as string;
+            if (evt === "inserted" && rid) {
+              const newRoom: Room = {
+                rid,
+                t:
+                  (sub?.t as string) ||
+                  ((sub as Record<string, unknown>)?.["type"] as string) ||
+                  "c",
+                name: (sub?.["name"] as string) || (sub?.["fname"] as string),
+                fname: (sub?.["fname"] as string) || undefined,
+              };
+              setRooms((prev) => {
+                if (prev.some((r) => r.rid === rid)) return prev;
+                return [newRoom, ...prev];
+              });
+              if (selectedRoom?.rid !== rid) {
+                const subs = globalRoomSubsRef.current;
+                if (!subs.has(rid)) {
+                  try {
+                    const id = ddp.subscribeRoomMessages(rid, (msg) => {
+                      const m = msg as unknown as Message;
+                      if (selectedRoom?.rid !== rid) {
+                        setUnreadMap((prev) => ({ ...prev, [rid]: true }));
+                        if (!pendingUnreadRef.current.has(rid)) {
+                          pendingUnreadRef.current.add(rid);
+                          setUnreadCounts((prev) => ({
+                            ...prev,
+                            [rid]: (prev[rid] || 0) + 1,
+                          }));
+                        }
+                        scheduleUnreadRecalc();
+                      }
+                    });
+                    subs.set(rid, id);
+                  } catch {}
+                }
+              }
+            }
+            if (evt === "removed" && rid) {
+              setRooms((prev) => prev.filter((r) => r.rid !== rid));
+            }
+            if (evt === "inserted" || evt === "removed" || evt === "updated") {
+              scheduleUnreadRecalc();
+            }
           }
         );
         subB = ddp.subscribeUserEvent(`${userId}/rooms-changed`, (args) => {
@@ -231,6 +377,47 @@ export default function ChatLayout({
               typeof unreadVal === "number" ? unreadVal : alert ? 1 : 0;
             setUnreadCounts((prev) => ({ ...prev, [rid]: count }));
             setUnreadMap((prev) => ({ ...prev, [rid]: count > 0 }));
+          }
+          const evt = (event || "") as string;
+          if (evt === "inserted" && rid) {
+            const newRoom: Room = {
+              rid,
+              t: (room?.["t"] as string) || "c",
+              name: (room?.["name"] as string) || (room?.["fname"] as string),
+              fname: (room?.["fname"] as string) || undefined,
+            };
+            setRooms((prev) => {
+              if (prev.some((r) => r.rid === rid)) return prev;
+              return [newRoom, ...prev];
+            });
+            if (selectedRoom?.rid !== rid) {
+              const subs = globalRoomSubsRef.current;
+              if (!subs.has(rid)) {
+                try {
+                  const id = ddp.subscribeRoomMessages(rid, (msg) => {
+                    const m = msg as unknown as Message;
+                    if (selectedRoom?.rid !== rid) {
+                      setUnreadMap((prev) => ({ ...prev, [rid]: true }));
+                      if (!pendingUnreadRef.current.has(rid)) {
+                        pendingUnreadRef.current.add(rid);
+                        setUnreadCounts((prev) => ({
+                          ...prev,
+                          [rid]: (prev[rid] || 0) + 1,
+                        }));
+                      }
+                      scheduleUnreadRecalc();
+                    }
+                  });
+                  subs.set(rid, id);
+                } catch {}
+              }
+            }
+          }
+          if (evt === "removed" && rid) {
+            setRooms((prev) => prev.filter((r) => r.rid !== rid));
+          }
+          if (evt === "inserted" || evt === "removed" || evt === "updated") {
+            scheduleUnreadRecalc();
           }
         });
       } catch {}

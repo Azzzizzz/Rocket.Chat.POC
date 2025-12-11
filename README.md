@@ -16,6 +16,7 @@ docker compose up -d
 ```
 
 Services provided:
+
 - `rocketchat` on `http://127.0.0.1:2000`
 - `mongodb` used by Rocket.Chat
 
@@ -35,6 +36,7 @@ npm run dev
 ```
 
 App URLs:
+
 - Teacher: `http://localhost:3000/teacher-chat`
 - Student: `http://localhost:3000/student-chat`
 
@@ -76,6 +78,7 @@ REST client is configured to use `'/api/rc'`: `tikme-chat-poc/lib/rocketRest.ts:
   - `${userId}/rooms-changed`
 
 References:
+
 - Connect + login: `tikme-chat-poc/pages/teacher-chat.tsx:40-41`, `tikme-chat-poc/pages/student-chat.tsx:39-40`
 - DDP client: `tikme-chat-poc/lib/rocketDDP.ts`
 - Room subscription wiring: `tikme-chat-poc/components/ChatLayout.tsx:190-213`
@@ -89,6 +92,7 @@ References:
 4. Send messages; student should see them in realtime.
 
 Sample accounts used by the POC:
+
 - `teacher1` / `1234567`
 - `student1` / `1234567`
 
@@ -126,12 +130,11 @@ npm run start     # Next start (production)
 - Proxy 404: ensure you opened the app on the port where the rewrite is active.
 - Dev lock error: remove `.next/dev/lock` and restart.
 - Realtime not updating: verify Rocket.Chat is reachable at `ws://127.0.0.1:2000/websocket`.
- - Build error about Turbopack and custom webpack: run `npm run build -- --webpack` or add an empty `turbopack: {}` to `next.config.ts`.
+- Build error about Turbopack and custom webpack: run `npm run build -- --webpack` or add an empty `turbopack: {}` to `next.config.ts`.
 
 ## 10) Docker Compose File
 
 The compose file lives at repository root: `docker-compose.yml`. It brings up Rocket.Chat and MongoDB with ports mapped for local development. Use `docker compose up -d` to start and `docker compose down` to stop.
-
 
 ```bash
 

@@ -6,6 +6,7 @@ const genId = (() => {
 let ws: WebSocket | null = null;
 let isReady = false;
 let connectPromise: Promise<void> | null = null;
+let isLoggedIn = false;
 
 type ChangeMsg = {
   msg: string;
@@ -104,12 +105,22 @@ export async function loginWithToken(resume: string) {
         if (data.msg === "result" && data.id === id) {
           clearTimeout(t);
           ws!.removeEventListener("message", handler);
+          isLoggedIn = true;
           resolve();
         }
       } catch {}
     };
     ws!.addEventListener("message", handler);
   });
+}
+
+async function waitUntilLoggedIn(timeoutMs = 8000) {
+  const start = Date.now();
+  while (!isLoggedIn) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("WS not open");
+    if (Date.now() - start > timeoutMs) throw new Error("Not logged in");
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 
 export function subscribeRoomMessages(
@@ -119,14 +130,25 @@ export function subscribeRoomMessages(
   if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("WS not open");
   const subId = genId();
   roomListeners.set(rid, cb);
-  ws.send(
-    JSON.stringify({
-      msg: "sub",
-      id: subId,
-      name: "stream-room-messages",
-      params: [rid, false],
-    })
-  );
+  const send = () =>
+    ws!.send(
+      JSON.stringify({
+        msg: "sub",
+        id: subId,
+        name: "stream-room-messages",
+        params: [rid, false],
+      })
+    );
+  if (isLoggedIn) send();
+  else {
+    // Defer until login completes
+    (async () => {
+      try {
+        await waitUntilLoggedIn();
+        send();
+      } catch {}
+    })();
+  }
   return subId;
 }
 
@@ -155,6 +177,7 @@ export function disconnect() {
   ws = null;
   isReady = false;
   connectPromise = null;
+  isLoggedIn = false;
 }
 
 export function subscribeUserEvent(
@@ -164,13 +187,23 @@ export function subscribeUserEvent(
   if (!ws || ws.readyState !== WebSocket.OPEN) throw new Error("WS not open");
   const subId = genId();
   userListeners.set(eventName, cb);
-  ws.send(
-    JSON.stringify({
-      msg: "sub",
-      id: subId,
-      name: "stream-notify-user",
-      params: [eventName, false],
-    })
-  );
+  const send = () =>
+    ws!.send(
+      JSON.stringify({
+        msg: "sub",
+        id: subId,
+        name: "stream-notify-user",
+        params: [eventName, false],
+      })
+    );
+  if (isLoggedIn) send();
+  else {
+    (async () => {
+      try {
+        await waitUntilLoggedIn();
+        send();
+      } catch {}
+    })();
+  }
   return subId;
 }
